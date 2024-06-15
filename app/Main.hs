@@ -47,14 +47,19 @@ main = do
   glClearColor 0 0 0.1 1 -- dark blue
 
   oldTime <- newIORef 0
+  particles <- newIORef initialParticles
+
+  let timeScale = 0.001
 
   -- main loop
   forever $ do
     GLFW.pollEvents
     time <- utctDayTime <$> getCurrentTime
     oldTimeValue <- readIORef oldTime
-    draw window initialParticles (time - oldTimeValue)
+    particlesValue <- readIORef particles
+    newParticles <- draw window particlesValue (timeScale * (time - oldTimeValue))
     atomicWriteIORef oldTime time
+    atomicWriteIORef particles newParticles
 
   GLFW.destroyWindow window
   GLFW.terminate
@@ -68,13 +73,14 @@ data Vector2 = Vector2 { x :: Float, y :: Float }
 zeroes :: Vector2
 zeroes = Vector2 0 0
 
+radius = 0.1
+
 drawParticle :: Particle -> IO ()
 drawParticle p = do
   let
     x = p.pos.x
     y = p.pos.y
     triangleAmount = 36
-    radius = 0.01
     pi = 3.14159365358979
 
   glBegin GL_TRIANGLE_FAN
@@ -88,25 +94,43 @@ drawParticle p = do
 times :: Vector2 -> Float -> Vector2
 times (Vector2 x y) f = Vector2 (f * x) (f * y)
 
+instance Num Vector2 where
+  a + b = Vector2 (a.x + b.x) (a.y + b.y)
+
+negateY :: Vector2 -> Vector2
+negateY (Vector2 x y) = Vector2 x (-y)
+
 down :: Vector2
-down = Vector2 0 (-1)
+down = Vector2 0 1
+
+-- returns a point clamped within collision bounds, and a bool for if a hit was detected
+checkCollision :: Float -> Float -> Vector2 -> (Vector2, Bool)
+checkCollision low high (Vector2 x y) = (Vector2 (clampSingle x) (clampSingle y), anyCol)
+  where
+    clampSingle x = if x < low + radius then low + radius else if x > high - radius then high - radius else x
+    anyCol = x < low + radius || x > high - radius || y < low + radius || y > high - radius
 
 updateParticle :: Particle -> DiffTime -> Particle
 updateParticle p deltaTime =
-  Particle
-    { pos = p.vel `times` realToFrac deltaTime
-    , vel = down `times` gravity `times` realToFrac deltaTime
-    }
+  let
+    newPos = p.pos + (p.vel `times` realToFrac deltaTime)
+    collision = checkCollision (-1) 1 $ newPos
+    newVel = p.vel + (down `times` gravity `times` realToFrac deltaTime)
+  in
+    Particle
+      { pos = fst collision
+      , vel = if snd collision then negateY newVel else newVel
+      }
 
 gravity = -9.81
 
 initialParticles = [Particle zeroes zeroes]
 
-draw :: Window -> [Particle] -> DiffTime -> IO ()
+draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
   let particles = map (\particle -> updateParticle particle deltaTime) oldParticles
 
-  putStrLn $ "deltaTime = " <> show deltaTime
+  -- putStrLn $ "deltaTime = " <> show deltaTime
 
   glClear GL_COLOR_BUFFER_BIT
 
@@ -114,3 +138,5 @@ draw window oldParticles deltaTime = do
     drawParticle particle
 
   GLFW.swapBuffers window
+
+  pure particles
