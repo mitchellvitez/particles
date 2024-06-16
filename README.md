@@ -2,6 +2,8 @@
 
 Particle simulation with emergent behavior
 
+See my blog post about this at [vitez.me/particles](https://vitez.me/particles)
+
 See [The code behind Particle Life](https://www.youtube.com/watch?v=scvuli-zcRc) for an explanation of the basic attraction/repulsion math
 
 ![particles](https://github.com/mitchellvitez/particles/assets/2068049/628e7ca1-1ddf-4d52-92ca-96631fbdcf79)

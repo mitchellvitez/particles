@@ -156,15 +156,21 @@ resolveWallCollisions p = p
   where
     upperBound = 1
     lowerBound = negate upperBound
+
+    realLowerBound = lowerBound + particleRadius
+    realUpperBound = upperBound - particleRadius
+
     adjustVelocity position velocity =
       if isCollision position
       then -velocity * collisionDamping
       else velocity
-    isCollision n = n < lowerBound + particleRadius || n > upperBound - particleRadius
+
+    isCollision n = n < realLowerBound || n > realUpperBound
+
     clamp n =
       if
-        | n < lowerBound + particleRadius -> lowerBound + particleRadius
-        | n > upperBound - particleRadius -> upperBound - particleRadius
+        | n < realLowerBound -> realLowerBound
+        | n > realUpperBound -> realUpperBound
         | otherwise -> n
 
 updateParticle :: [Particle] -> Particle -> DiffTime -> Particle
