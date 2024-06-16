@@ -1,4 +1,6 @@
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -51,7 +53,7 @@ main = do
   time <- utctDayTime <$> getCurrentTime
   -- time <- newIORef =<< utctDayTime <$> getCurrentTime
   -- particles <- newIORef initialParticles
-  ps <- randomize initialParticles
+  ps <- initialParticles
   loop ps time window
 
   -- main loop
@@ -74,12 +76,6 @@ loop particles oldTime window = do
   time <- utctDayTime <$> getCurrentTime
   newParticles <- draw window particles (time - oldTime)
   loop newParticles time window
-
-randomize :: [Particle] -> IO [Particle]
-randomize particles = do
-  r1 <- randomRIO (-1, 1)
-  r2 <- randomRIO (-1, 1)
-  pure $ map (\p -> p { pos = p.pos { x = p.pos.x + r1, y = p.pos.y + r2 } }) particles
 
 data Particle = Particle { pos :: Vector2, vel :: Vector2 }
   deriving (Eq, Show)
@@ -148,20 +144,44 @@ updateParticle :: [Particle] -> Particle -> DiffTime -> Particle
 updateParticle allParticles p deltaTime =
   resolveWallCollisions $ Particle
     { pos = p.pos `plus` (newVel `times` realToFrac deltaTime)
-    , vel = newVel `plus` (attractionAcceleration allParticles p `times` realToFrac deltaTime)
+    , vel = (newVel `plus` (attractionAcceleration allParticles p `times` realToFrac deltaTime)) `times` drag
     }
   where
     newVel = p.vel `plus` (down `times` (gravity * realToFrac deltaTime))
+    drag = 0.9
+
+distance :: Vector2 -> Vector2 -> Float
+distance a b = sqrt $ (b.x - a.x)^2 + (b.y - a.y)^2
 
 attractionAcceleration :: [Particle] -> Particle -> Vector2
-attractionAcceleration particles p = zeroes
+attractionAcceleration particles p =
+  sumVec $ (flip map) otherParticles $ \other ->
+    let dist = distance p.pos other.pos
+        dir = (other.pos `minus` p.pos) `times` (1 / dist)
+    in
+      if
+        | dist < repulsionRadius -> dir `times` (-1 * scale * 0.5 / max 0.01 (dist * dist))
+        -- | dist < nothingRadius -> zeroes
+        | dist < attractionRadius -> dir `times` (scale / (dist * dist))
+        | otherwise -> zeroes
+
   where
+    scale = 0.05
+    repulsionRadius = 0.24
+    -- nothingRadius = 0.14
+    attractionRadius = 0.25
     otherParticles = filter (/=p) particles
 
-initialParticles :: [Particle]
-initialParticles = [Particle (Vector2 x y) zeroes | x <- range, y <- range]
-  where
-    range = [-0.9, -0.8 .. 0.9]
+gravity = 10
+
+initialParticles :: IO [Particle]
+initialParticles = sequence $ replicate 500 randomParticle
+
+randomParticle :: IO Particle
+randomParticle = do
+  r1 :: Float <- randomRIO (-1, 1)
+  r2 :: Float <- randomRIO (-1, 1)
+  pure $ Particle { pos = Vector2 r1 r2, vel = zeroes}
 
 magnitude :: Vector2 -> Float
 magnitude (Vector2 x y) = sqrt (x*x + y*y)
@@ -174,8 +194,6 @@ right = Vector2 1 0
 
 up :: Vector2
 up = Vector2 0 1
-
-gravity = 1
 
 draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
