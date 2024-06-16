@@ -1,12 +1,12 @@
 cabal-version:      2.4
-name:               fluidsim
+name:               particles
 version:            0.1.0.0
 author:             Mitchell Vitez
 maintainer:         mitchell@vitez.me
 
 extra-source-files: CHANGELOG.md
 
-executable fluidsim
+executable particles
     main-is:          Main.hs
     other-modules:    Vector2
     build-depends:    base >=4.14.3.0, GLFW-b, OpenGL, OpenGLRaw, vector, time, random
