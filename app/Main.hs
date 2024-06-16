@@ -1,24 +1,103 @@
-{-# LANGUAGE OverloadedRecordDot #-}
+{-# OPTIONS -Wall -Werror #-}
+
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
 import Graphics.GL.Compatibility30
 import Graphics.UI.GLFW as GLFW
-import qualified Data.Vector.Storable as VS
-import Control.Monad (forever, forM_)
-import Foreign.Ptr (castPtr)
+import Control.Monad (forM_)
 import System.Exit (exitWith, ExitCode(..))
-import Data.Word (Word8)
-import Foreign.Marshal.Alloc (malloc)
-import Foreign.Storable (peek)
-import GHC.Float (int2Float)
 import Data.Time.Clock
-import Data.IORef
-import Control.Concurrent (threadDelay)
-import Debug.Trace
 import System.Random
+import Vector2
+
+-- PARAMETERS --
+
+windowSize :: Int
+windowSize = 1080
+
+particleRadius :: Float
+particleRadius = 0.01
+
+numParticles :: Int
+numParticles = 500
+
+gravity :: Float
+gravity = 0
+
+timeStep :: TimeStep
+timeStep = RealTime
+-- timeStep = Fixed 0.02
+
+clearColor :: (Float, Float, Float)
+clearColor = (0, 0, 0.1)
+
+collisionDamping :: Float
+collisionDamping = 0.7
+
+slowdownConstant :: Float
+slowdownConstant = 0.5
+
+setGlColor :: Color -> IO ()
+setGlColor = \case
+  Red    -> glColor3f 1.0 0.4 0.2
+  Green  -> glColor3f 0.2 1.0 0.5
+  Blue   -> glColor3f 0.2 0.5 1.0
+  Yellow -> glColor3f 0.9 0.9 0.2
+
+-- should be between 0 and 1
+repulsionRadius :: Float
+repulsionRadius = 0.3
+
+data Color = Red | Green | Blue | Yellow
+  deriving (Eq, Show, Enum, Bounded)
+
+attractionFactor :: Color -> Color -> Float
+attractionFactor a b = case (a, b) of
+  (Red   , Red)    ->  0.6
+  (Red   , Green)  -> -0.3
+  (Red   , Blue)   ->  0.2
+  (Red   , Yellow) -> -0.4
+  (Green , Green)  ->  2.0
+  (Green , Blue)   ->  0.3
+  (Green , Yellow) -> -0.2
+  (Blue  , Blue)   -> -0.4
+  (Blue  , Yellow) ->  0.5
+  (Yellow, Yellow) -> -0.2
+  -- repeats of above, but want to enumerate all cases for totality checking
+  (Green , Red)   -> swap
+  (Blue  , Red)   -> swap
+  (Blue  , Green) -> swap
+  (Yellow, Red)   -> swap
+  (Yellow, Green) -> swap
+  (Yellow, Blue)  -> swap
+  where
+    swap = attractionFactor b a
+
+-- END PARAMETERS --
+
+main :: IO ()
+main = do
+  _ <- GLFW.init
+  GLFW.defaultWindowHints
+  -- we don't support non-square aspect ratios
+  Just window <- GLFW.createWindow windowSize windowSize "Particle Simulation" Nothing Nothing
+  GLFW.makeContextCurrent (Just window)
+  GLFW.setKeyCallback window (Just keyPressed)
+  GLFW.setWindowCloseCallback window (Just shutdown)
+  let (r, g, b) = clearColor in glClearColor r g b 1
+  glClear GL_COLOR_BUFFER_BIT
+
+  time <- utctDayTime <$> getCurrentTime
+  particles <- initialParticles
+  loop particles time window
+
+  GLFW.destroyWindow window
+  GLFW.terminate
 
 keyPressed :: GLFW.KeyCallback
 keyPressed window GLFW.Key'Escape _ GLFW.KeyState'Pressed _ = shutdown window
@@ -31,103 +110,38 @@ shutdown window = do
   GLFW.terminate
   exitWith ExitSuccess
 
-width :: Int
-width = 1920 `div` 2
-
-height :: Int
-height = 1920 `div` 2
-
--- TODO: mouse interaction
-
--- we don't support window resizing
-main :: IO ()
-main = do
-  GLFW.init
-  GLFW.defaultWindowHints
-  Just window <- GLFW.createWindow width height "Haskell Fluid Simulation" Nothing Nothing
-  GLFW.makeContextCurrent (Just window)
-  GLFW.setKeyCallback window (Just keyPressed)
-  GLFW.setWindowCloseCallback window (Just shutdown)
-  glClearColor 0 0 0.1 1 -- dark blue
-
-  time <- utctDayTime <$> getCurrentTime
-  -- time <- newIORef =<< utctDayTime <$> getCurrentTime
-  -- particles <- newIORef initialParticles
-  ps <- initialParticles
-  loop ps time window
-
-  -- main loop
-  -- TODO: convert this to a loop function without the IORefs
-  -- forever $ do
-  --   GLFW.pollEvents
-  --   time <- utctDayTime <$> getCurrentTime
-  --   oldTimeValue <- readIORef oldTime
-  --   particlesValue <- readIORef particles
-  --   newParticles <- draw window particlesValue (time - oldTimeValue)
-  --   atomicWriteIORef oldTime time
-  --   atomicWriteIORef particles newParticles
-
-  GLFW.destroyWindow window
-  GLFW.terminate
-
 loop :: [Particle] -> DiffTime -> Window -> IO ()
-loop particles oldTime window = do
+loop oldParticles oldTime window = do
   GLFW.pollEvents
   time <- utctDayTime <$> getCurrentTime
-  newParticles <- draw window particles (time - oldTime)
-  loop newParticles time window
+  particles <- draw window oldParticles $ case timeStep of
+    Fixed t -> t
+    RealTime -> time - oldTime
+  loop particles time window
 
-data Color = Red | Green | Blue | Yellow
-  deriving (Eq, Show, Enum, Bounded)
+data TimeStep = Fixed DiffTime | RealTime
 
-data Particle = Particle { pos :: Vector2, vel :: Vector2, color :: Color }
+data Particle = Particle
+  { pos :: Vector2
+  , vel :: Vector2
+  , color :: Color
+  }
   deriving (Eq, Show)
-
-data Vector2 = Vector2 { x :: Float, y :: Float }
-  deriving (Eq, Show)
-
-zeroes :: Vector2
-zeroes = Vector2 0 0
-
-radius = 0.01
 
 drawParticle :: Particle -> IO ()
 drawParticle p = do
-  let
-    x = p.pos.x
-    y = p.pos.y
-    triangleAmount = 36
-    pi = 3.14159365358979
+  let vertices = 12
 
-  -- pure $ traceId "drawParticle"
   glBegin GL_TRIANGLE_FAN
-  case p.color of
-    Red -> glColor3f 1 0.5 0.25
-    Green -> glColor3f 0.25 1 0.5
-    Blue -> glColor3f 0.25 0.5 1
-    Yellow -> glColor3f 0.9 0.9 0.25
-  glVertex2f x y
-  forM_ [0..triangleAmount] $ \i -> do
-    let z = i * 2 * pi / triangleAmount
-    glVertex2f (x + radius * cos z) (y + radius * sin z)
+  setGlColor p.color
+  glVertex2f p.pos.x p.pos.y
+
+  forM_ [0..vertices] $ \i -> do
+    let angle = i * 2 * pi / vertices
+    glVertex2f (p.pos.x + particleRadius * cos angle) (p.pos.y + particleRadius * sin angle)
+
   glEnd
 
-times :: Vector2 -> Float -> Vector2
-times (Vector2 x y) f = Vector2 (f * x) (f * y)
-
-plus :: Vector2 -> Vector2 -> Vector2
-plus a b = Vector2 (a.x + b.x) (a.y + b.y)
-
-minus :: Vector2 -> Vector2 -> Vector2
-minus a b = Vector2 (a.x - b.x) (a.y - b.y)
-
-negateY :: Vector2 -> Vector2
-negateY (Vector2 x y) = Vector2 x (-y)
-
-down :: Vector2
-down = Vector2 0 (-0.1)
-
--- returns a point clamped within collision bounds, and a bool for if a hit was detected
 resolveWallCollisions :: Particle -> Particle
 resolveWallCollisions p = p
   { pos = p.pos
@@ -135,98 +149,78 @@ resolveWallCollisions p = p
     , y = clamp p.pos.y
     }
   , vel = p.vel
-    { x = if xCollision then -p.vel.x * damping else p.vel.x
-    , y = if yCollision then -p.vel.y * damping else p.vel.y
+    { x = adjustVelocity p.pos.x p.vel.x
+    , y = adjustVelocity p.pos.y p.vel.y
     }
   }
   where
-    low = -1 :: Float
-    high = 1 :: Float
-    damping = 0.7
-    clamp a = if a < low + radius then low + radius else if a > high - radius then high - radius else a
-    xCollision = p.pos.x < low + radius || p.pos.x > high - radius
-    yCollision = p.pos.y < low + radius || p.pos.y > high - radius
+    upperBound = 1
+    lowerBound = negate upperBound
+    adjustVelocity position velocity =
+      if isCollision position
+      then -velocity * collisionDamping
+      else velocity
+    isCollision n = n < lowerBound + particleRadius || n > upperBound - particleRadius
+    clamp n =
+      if
+        | n < lowerBound + particleRadius -> lowerBound + particleRadius
+        | n > upperBound - particleRadius -> upperBound - particleRadius
+        | otherwise -> n
 
 updateParticle :: [Particle] -> Particle -> DiffTime -> Particle
 updateParticle allParticles p deltaTime =
   resolveWallCollisions $ p
-    { pos = p.pos `plus` (newVel `times` realToFrac deltaTime)
-    , vel = velWithDrag
+    { pos = p.pos `plus` (newVel `scale` realToFrac deltaTime)
+    , vel = newVel
     }
   where
-    newVel = p.vel `plus` (down `times` (gravity * realToFrac deltaTime))
-    newNewVel = (newVel `plus` (attractionAcceleration allParticles p `times` realToFrac deltaTime))
-    velWithDrag = newNewVel `times` 0.2
-
-distance :: Vector2 -> Vector2 -> Float
-distance a b = sqrt $ (b.x - a.x)^2 + (b.y - a.y)^2
+    newVel =
+      sumVec
+        [ p.vel
+        , scale downVec $ gravity * realToFrac deltaTime -- gravity
+        , attractionAcceleration allParticles p `scale` realToFrac deltaTime -- particle attractions
+        ]
+        `scale` slowdownConstant
 
 attractionAcceleration :: [Particle] -> Particle -> Vector2
 attractionAcceleration particles p =
   sumVec $ (flip map) otherParticles $ \other ->
     let dist = distance p.pos other.pos
-        dir = (other.pos `minus` p.pos) `times` (1 / dist)
+        dir = scale (other.pos `minus` p.pos) (1 / dist)
     in
       if
-        | dist < repulsionRadius -> dir `times` (dist / repulsionRadius - 1)
-        | dist < attractionRadius -> dir `times` (attractionFactor p.color other.color * (1 - (abs $ 2 * dist - 1 - repulsionRadius) / (1 - repulsionRadius)))
-        | otherwise -> zeroes
+        | dist < repulsionRadius -> scale dir $ dist / repulsionRadius - 1
+        | dist < attractionRadius -> scale dir $ attractionFactor p.color other.color * (1 - (abs $ 2 * dist - 1 - repulsionRadius) / (1 - repulsionRadius))
+        | otherwise -> zeroVec
 
   where
-    repulsionRadius = 0.3
     attractionRadius = 1
     otherParticles = filter (/=p) particles
 
-attractionFactor :: Color -> Color -> Float
-attractionFactor a b = case (a, b) of
-  (Red, Red) -> 0.2
-  (Red, Green) -> -0.3
-  (Red, Blue) -> 0.21
-  (Red, Yellow) -> -0.4
-  (Green, Green) -> -0.8
-  (Green, Blue) -> 0.3
-  (Green, Yellow) -> -0.2
-  (Blue, Blue) -> -0.4
-  (Blue, Yellow) -> 0.5
-  (Yellow, Yellow) -> -0.2
-  (a, b) -> attractionFactor b a
-
-gravity = 0
-
 initialParticles :: IO [Particle]
-initialParticles = sequence $ replicate 500 randomParticle
-
-randomParticle :: IO Particle
-randomParticle = do
-  r1 :: Float <- randomRIO (-1, 1)
-  r2 :: Float <- randomRIO (-1, 1)
-  rC :: Color <- toEnum <$> randomRIO (fromEnum (minBound :: Color), fromEnum (maxBound :: Color))
-  pure $ Particle { pos = Vector2 r1 r2, vel = zeroes, color = rC}
-
-magnitude :: Vector2 -> Float
-magnitude (Vector2 x y) = sqrt (x*x + y*y)
-
-sumVec :: [Vector2] -> Vector2
-sumVec = foldl plus zeroes
-
-right :: Vector2
-right = Vector2 1 0
-
-up :: Vector2
-up = Vector2 0 1
+initialParticles = sequence $ replicate numParticles randomParticle
+  where
+    randomParticle = do
+      randomX :: Float <- randomRIO (-1, 1)
+      randomY :: Float <- randomRIO (-1, 1)
+      randomColor :: Color <- toEnum <$> randomRIO
+        ( fromEnum (minBound :: Color)
+        , fromEnum (maxBound :: Color)
+        )
+      pure $ Particle
+        { pos = Vector2 randomX randomY
+        , vel = zeroVec
+        , color = randomColor
+        }
 
 draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
   let particles = map (\particle -> updateParticle oldParticles particle deltaTime) oldParticles
 
-  -- putStrLn $ "deltaTime = " <> show deltaTime
-  putStrLn $ "fps = " <> show (truncate (1 / deltaTime))
+  putStrLn $ "fps = " <> show (truncate $ 1 / deltaTime :: Int)
 
   glClear GL_COLOR_BUFFER_BIT
-
-  forM_ particles $ \particle -> do
-    drawParticle particle
-
+  forM_ particles drawParticle
   GLFW.swapBuffers window
 
   pure particles
