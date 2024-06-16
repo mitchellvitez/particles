@@ -81,7 +81,7 @@ randomize particles = do
   r2 <- randomRIO (-1, 1)
   pure $ map (\p -> p { pos = p.pos { x = p.pos.x + r1, y = p.pos.y + r2 } }) particles
 
-data Particle = Particle { pos :: Vector2, vel :: Vector2, density :: Float}
+data Particle = Particle { pos :: Vector2, vel :: Vector2 }
   deriving (Eq, Show)
 
 data Vector2 = Vector2 { x :: Float, y :: Float }
@@ -125,8 +125,8 @@ down :: Vector2
 down = Vector2 0 (-0.1)
 
 -- returns a point clamped within collision bounds, and a bool for if a hit was detected
-resolveCollisions :: Particle -> Particle
-resolveCollisions p = Particle
+resolveWallCollisions :: Particle -> Particle
+resolveWallCollisions p = Particle
   { pos = p.pos
     { x = clamp p.pos.x
     , y = clamp p.pos.y
@@ -135,7 +135,6 @@ resolveCollisions p = Particle
     { x = if xCollision then -p.vel.x * damping else p.vel.x
     , y = if yCollision then -p.vel.y * damping else p.vel.y
     }
-  , density = p.density
   }
   where
     low = -1 :: Float
@@ -147,30 +146,22 @@ resolveCollisions p = Particle
 
 updateParticle :: [Particle] -> Particle -> DiffTime -> Particle
 updateParticle allParticles p deltaTime =
-  {-trace "updateParticle"-} resolveCollisions $ Particle
+  resolveWallCollisions $ Particle
     { pos = p.pos `plus` (newVel `times` realToFrac deltaTime)
-    , vel = newVel `plus` (pressureAcceleration `times` realToFrac deltaTime)
-    , density = calculateDensity allParticles p.pos
+    , vel = newVel `plus` (attractionAcceleration allParticles p `times` realToFrac deltaTime)
     }
   where
     newVel = p.vel `plus` (down `times` (gravity * realToFrac deltaTime))
-    pressureAcceleration = pressureForce allParticles p.pos `times` (1 / p.density)
+
+attractionAcceleration :: [Particle] -> Particle -> Vector2
+attractionAcceleration particles p = zeroes
+  where
+    otherParticles = filter (/=p) particles
 
 initialParticles :: [Particle]
-initialParticles = [Particle (Vector2 x y) zeroes 1 | x <- range, y <- range]
+initialParticles = [Particle (Vector2 x y) zeroes | x <- range, y <- range]
   where
     range = [-0.9, -0.8 .. 0.9]
-
-smooth :: Float -> Float -> Float
-smooth radius dst =
-  let volume = pi * radius^8 / 4
-  in if dst > radius then 0 else (radius - dst) * (radius - dst)/ volume
-
-smoothDerivative :: Float -> Float -> Float
-smoothDerivative dst radius =
-  if dst >= radius then 0 else scale * (dst - radius)
-  where
-    scale = 12 / (radius^4 * pi)
 
 magnitude :: Vector2 -> Float
 magnitude (Vector2 x y) = sqrt (x*x + y*y)
@@ -184,39 +175,7 @@ right = Vector2 1 0
 up :: Vector2
 up = Vector2 0 1
 
-mass = 1
-smoothingRadius = 0.5
-
-targetDensity = 100000
-pressureMultiplier = 10
 gravity = 1
-
-pressureForce :: [Particle] -> Vector2 -> Vector2
-pressureForce allParticles samplePoint =
-  sumVec $ (flip map) (filter notThisPos allParticles) $ \p ->
-    let
-      dst = magnitude (p.pos `minus` samplePoint)
-      dir = (p.pos `minus` samplePoint) `times` (1 / dst)
-      slope = smoothDerivative smoothingRadius dst
-      -- dens = calculateDensity allParticles p.pos
-      dens = p.density
-    in
-      dir `times` (-1 * densityToPressure dens * slope * mass / dens)
-  where
-    notThisPos :: Particle -> Bool
-    notThisPos p = not $ p.pos == samplePoint
-
-densityToPressure :: Float -> Float
-densityToPressure dens = densityError * (-pressureMultiplier)
-  where
-    densityError = dens - targetDensity
-
-calculateDensity :: [Particle] -> Vector2 -> Float
-calculateDensity allParticles samplePoint =
-  sum $ (flip map) allParticles $ \p ->
-    let dst = magnitude (p.pos `minus` samplePoint)
-        influence = smooth smoothingRadius dst
-    in mass * influence
 
 draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
