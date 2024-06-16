@@ -77,7 +77,10 @@ loop particles oldTime window = do
   newParticles <- draw window particles (time - oldTime)
   loop newParticles time window
 
-data Particle = Particle { pos :: Vector2, vel :: Vector2 }
+data Color = Red | Green | Blue | Yellow
+  deriving (Eq, Show, Enum, Bounded)
+
+data Particle = Particle { pos :: Vector2, vel :: Vector2, color :: Color }
   deriving (Eq, Show)
 
 data Vector2 = Vector2 { x :: Float, y :: Float }
@@ -98,7 +101,11 @@ drawParticle p = do
 
   -- pure $ traceId "drawParticle"
   glBegin GL_TRIANGLE_FAN
-  glColor3f 0.25 0.5 1
+  case p.color of
+    Red -> glColor3f 1 0.5 0.25
+    Green -> glColor3f 0.25 1 0.5
+    Blue -> glColor3f 0.25 0.5 1
+    Yellow -> glColor3f 0.9 0.9 0.25
   glVertex2f x y
   forM_ [0..triangleAmount] $ \i -> do
     let z = i * 2 * pi / triangleAmount
@@ -122,7 +129,7 @@ down = Vector2 0 (-0.1)
 
 -- returns a point clamped within collision bounds, and a bool for if a hit was detected
 resolveWallCollisions :: Particle -> Particle
-resolveWallCollisions p = Particle
+resolveWallCollisions p = p
   { pos = p.pos
     { x = clamp p.pos.x
     , y = clamp p.pos.y
@@ -142,13 +149,14 @@ resolveWallCollisions p = Particle
 
 updateParticle :: [Particle] -> Particle -> DiffTime -> Particle
 updateParticle allParticles p deltaTime =
-  resolveWallCollisions $ Particle
+  resolveWallCollisions $ p
     { pos = p.pos `plus` (newVel `times` realToFrac deltaTime)
-    , vel = (newVel `plus` (attractionAcceleration allParticles p `times` realToFrac deltaTime)) `times` drag
+    , vel = velWithDrag
     }
   where
     newVel = p.vel `plus` (down `times` (gravity * realToFrac deltaTime))
-    drag = 0.9
+    newNewVel = (newVel `plus` (attractionAcceleration allParticles p `times` realToFrac deltaTime))
+    velWithDrag = newNewVel `times` 0.2
 
 distance :: Vector2 -> Vector2 -> Float
 distance a b = sqrt $ (b.x - a.x)^2 + (b.y - a.y)^2
@@ -160,19 +168,30 @@ attractionAcceleration particles p =
         dir = (other.pos `minus` p.pos) `times` (1 / dist)
     in
       if
-        | dist < repulsionRadius -> dir `times` (-1 * scale * 0.5 / max 0.01 (dist * dist))
-        -- | dist < nothingRadius -> zeroes
-        | dist < attractionRadius -> dir `times` (scale / (dist * dist))
+        | dist < repulsionRadius -> dir `times` (dist / repulsionRadius - 1)
+        | dist < attractionRadius -> dir `times` (attractionFactor p.color other.color * (1 - (abs $ 2 * dist - 1 - repulsionRadius) / (1 - repulsionRadius)))
         | otherwise -> zeroes
 
   where
-    scale = 0.05
-    repulsionRadius = 0.24
-    -- nothingRadius = 0.14
-    attractionRadius = 0.25
+    repulsionRadius = 0.3
+    attractionRadius = 1
     otherParticles = filter (/=p) particles
 
-gravity = 10
+attractionFactor :: Color -> Color -> Float
+attractionFactor a b = case (a, b) of
+  (Red, Red) -> 0.2
+  (Red, Green) -> -0.3
+  (Red, Blue) -> 0.21
+  (Red, Yellow) -> -0.4
+  (Green, Green) -> -0.8
+  (Green, Blue) -> 0.3
+  (Green, Yellow) -> -0.2
+  (Blue, Blue) -> -0.4
+  (Blue, Yellow) -> 0.5
+  (Yellow, Yellow) -> -0.2
+  (a, b) -> attractionFactor b a
+
+gravity = 0
 
 initialParticles :: IO [Particle]
 initialParticles = sequence $ replicate 500 randomParticle
@@ -181,7 +200,8 @@ randomParticle :: IO Particle
 randomParticle = do
   r1 :: Float <- randomRIO (-1, 1)
   r2 :: Float <- randomRIO (-1, 1)
-  pure $ Particle { pos = Vector2 r1 r2, vel = zeroes}
+  rC :: Color <- toEnum <$> randomRIO (fromEnum (minBound :: Color), fromEnum (maxBound :: Color))
+  pure $ Particle { pos = Vector2 r1 r2, vel = zeroes, color = rC}
 
 magnitude :: Vector2 -> Float
 magnitude (Vector2 x y) = sqrt (x*x + y*y)
@@ -199,7 +219,8 @@ draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
   let particles = map (\particle -> updateParticle oldParticles particle deltaTime) oldParticles
 
-  putStrLn $ "deltaTime = " <> show deltaTime
+  -- putStrLn $ "deltaTime = " <> show deltaTime
+  putStrLn $ "fps = " <> show (truncate (1 / deltaTime))
 
   glClear GL_COLOR_BUFFER_BIT
 
