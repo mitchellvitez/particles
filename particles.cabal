@@ -4,8 +4,6 @@ version:            0.1.0.0
 author:             Mitchell Vitez
 maintainer:         mitchell@vitez.me
 
-extra-source-files: CHANGELOG.md
-
 executable particles
     main-is:          Main.hs
     other-modules:    Vector2
