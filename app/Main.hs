@@ -9,6 +9,7 @@
 module Main where
 
 import Control.Monad (forM_)
+import Data.Functor ((<&>))
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes)
 import Data.Time.Clock
@@ -197,7 +198,7 @@ updateParticle allParticles p deltaTime =
 
 attractionAcceleration :: [Particle] -> Particle -> Vector2
 attractionAcceleration particles p =
-  sumVec $ (flip map) otherParticles $ \other ->
+  sumVec $ otherParticles <&> \other ->
     let dist = distance p.pos other.pos
         dir = scale (other.pos `minus` p.pos) factor
         factor = if dist == 0 then -1 else 1 / dist
@@ -227,41 +228,19 @@ initialParticles = sequence $ replicate numParticles randomParticle
         }
 
 numPartitions :: Int
-numPartitions = if calc < 3 then 3 else calc
+numPartitions = if calc < 1 then 1 else calc
   where calc = floor $ 1 / (attractionRadius * 1/2)
 
 getPartition :: Particle -> (Int, Int)
 getPartition p =
-  partition
-  where
-    partition = (floorMultiple p.pos.x, floorMultiple p.pos.y)
-    floorMultiple position = floor $ fromIntegral numPartitions * position
+  (floorMultiple p.pos.x, floorMultiple p.pos.y)
+  where floorMultiple position = floor $ fromIntegral numPartitions * position
 
 draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
 
-  let
-    partitions :: Map.Map (Int, Int) [Particle]
-    partitions = Map.fromListWith (++) $ map (\p -> (getPartition p, [p])) oldParticles
-
-  let
-    particles = concat . concat $
-      (flip map) [-numPartitions..numPartitions-1] $ \i ->
-        (flip map) [-numPartitions..numPartitions-1] $ \j ->
-          let
-            -- 3x3 grid of partitions centered at the current partition
-            possibilities =
-              [ (i-1, j-1), (i-1, j), (i-1, j+1)
-              , (i, j-1), (i, j), (i, j+1)
-              , (i+1, j-1), (i+1, j), (i+1, j+1)
-              ]
-
-            -- all particles that can affect this one
-            neighborhood = concat $ catMaybes $ map (`Map.lookup` partitions) possibilities
-
-          in
-            -- updated particles
-            map (\particle -> updateParticle neighborhood particle deltaTime) $ concat $ Map.lookup (i, j) partitions
+  let partitions = Map.fromListWith (++) $ map (\p -> (getPartition p, [p])) oldParticles
+      particles = updateParticles partitions deltaTime
 
   putStrLn $ "fps = " <> show (truncate $ 1 / deltaTime :: Int)
 
@@ -270,3 +249,19 @@ draw window oldParticles deltaTime = do
   GLFW.swapBuffers window
 
   pure particles
+
+updateParticles :: Map.Map (Int, Int) [Particle] -> DiffTime -> [Particle]
+updateParticles partitions deltaTime =
+  concat . concat $
+    [-numPartitions..numPartitions-1] <&> \i ->
+      [-numPartitions..numPartitions-1] <&> \j ->
+        let
+          -- 3x3 grid of partitions centered at the current partition
+          possibilities = [(i', j') | i' <- [i-1..i+1], j' <- [j-1..j+1]]
+
+          -- all particles that can affect this one
+          nearbyParticles = concat . catMaybes $ map (`Map.lookup` partitions) possibilities
+
+        in
+          -- updated particles in this partition
+          map (\particle -> updateParticle nearbyParticles particle deltaTime) $ concat $ Map.lookup (i, j) partitions
