@@ -4,14 +4,17 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 
 module Main where
 
+import Control.Monad (forM_)
+import Data.Map qualified as Map
+import Data.Maybe (catMaybes)
+import Data.Time.Clock
 import Graphics.GL.Compatibility30
 import Graphics.UI.GLFW as GLFW
-import Control.Monad (forM_)
 import System.Exit (exitWith, ExitCode(..))
-import Data.Time.Clock
 import System.Random
 import Vector2
 
@@ -52,6 +55,10 @@ setGlColor = \case
 -- should be between 0 and 1
 repulsionRadius :: Float
 repulsionRadius = 0.3
+
+-- should be between repulsionRadius and 1
+attractionRadius :: Float
+attractionRadius = 1
 
 data Color = Red | Green | Blue | Yellow
   deriving (Eq, Show, Enum, Bounded)
@@ -192,7 +199,8 @@ attractionAcceleration :: [Particle] -> Particle -> Vector2
 attractionAcceleration particles p =
   sumVec $ (flip map) otherParticles $ \other ->
     let dist = distance p.pos other.pos
-        dir = scale (other.pos `minus` p.pos) (1 / dist)
+        dir = scale (other.pos `minus` p.pos) factor
+        factor = if dist == 0 then -1 else 1 / dist
     in
       if
         | dist < repulsionRadius -> scale dir $ dist / repulsionRadius - 1
@@ -200,7 +208,6 @@ attractionAcceleration particles p =
         | otherwise -> zeroVec
 
   where
-    attractionRadius = 1
     otherParticles = filter (/=p) particles
 
 initialParticles :: IO [Particle]
@@ -219,9 +226,42 @@ initialParticles = sequence $ replicate numParticles randomParticle
         , color = randomColor
         }
 
+numPartitions :: Int
+numPartitions = if calc < 3 then 3 else calc
+  where calc = floor $ 1 / (attractionRadius * 1/2)
+
+getPartition :: Particle -> (Int, Int)
+getPartition p =
+  partition
+  where
+    partition = (floorMultiple p.pos.x, floorMultiple p.pos.y)
+    floorMultiple position = floor $ fromIntegral numPartitions * position
+
 draw :: Window -> [Particle] -> DiffTime -> IO [Particle]
 draw window oldParticles deltaTime = do
-  let particles = map (\particle -> updateParticle oldParticles particle deltaTime) oldParticles
+
+  let
+    partitions :: Map.Map (Int, Int) [Particle]
+    partitions = Map.fromListWith (++) $ map (\p -> (getPartition p, [p])) oldParticles
+
+  let
+    particles = concat . concat $
+      (flip map) [-numPartitions..numPartitions-1] $ \i ->
+        (flip map) [-numPartitions..numPartitions-1] $ \j ->
+          let
+            -- 3x3 grid of partitions centered at the current partition
+            possibilities =
+              [ (i-1, j-1), (i-1, j), (i-1, j+1)
+              , (i, j-1), (i, j), (i, j+1)
+              , (i+1, j-1), (i+1, j), (i+1, j+1)
+              ]
+
+            -- all particles that can affect this one
+            neighborhood = concat $ catMaybes $ map (`Map.lookup` partitions) possibilities
+
+          in
+            -- updated particles
+            map (\particle -> updateParticle neighborhood particle deltaTime) $ concat $ Map.lookup (i, j) partitions
 
   putStrLn $ "fps = " <> show (truncate $ 1 / deltaTime :: Int)
 
